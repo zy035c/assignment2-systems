@@ -481,7 +481,7 @@ class CausalMultiHeadSelfAttention(nn.Module):
 
         self.positional_encoder = positional_encoder  # RoPE
 
-    @nvtx.range("causal multihead attetion")
+    @nvtx.range("causal multihead attention")
     def forward(self, x: Float[Tensor, " ... seq d_k"], token_positions: Int[Tensor, " ... seq"] | None = None) -> Float[Tensor, " ... seq d_v"]:
         """
         Args:

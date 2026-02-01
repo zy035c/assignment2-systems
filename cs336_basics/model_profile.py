@@ -19,8 +19,12 @@ d_ff = 1314
 theta = 10_000
 num_layers = 4
 num_heads = 16
-batch_size = 8
+batch_size = 1
 device = "cuda"
+
+# Quantization configuration
+DTYPE = torch.bfloat16  # Use bfloat16 for mixed precision (better than fp16 on Ampere)
+USE_AMP = True  # Enable automatic mixed precision
 
 
 SMALL_LLM_CONFIG = dict(
@@ -38,7 +42,7 @@ MEDIUM_LLM_CONFIG = dict(
 )
 
 LARGE_LLM_CONFIG = dict(
-    d_model=2048,
+    d_model=1280,
     d_ff=5120,
     num_layers=36,
     num_heads=20,
@@ -65,6 +69,7 @@ def profile_model(
     n_profile_steps=10,
     forward_only=False,
 ):
+    # Create model in bfloat16 for reduced memory usage
     llm = BasicsTransformerLM(
         vocab_size=vocab_size,
         context_length=context_length,
@@ -74,6 +79,13 @@ def profile_model(
         d_ff=config['d_ff'],
         rope_theta=theta,
     ).to(device)
+
+    # Cast weights to bfloat16 (memory savings ~2x)
+    llm = llm.to(DTYPE)
+
+    # Print memory usage before training
+    print(f"Model dtype: {next(llm.parameters()).dtype}")
+    print(f"Memory before training: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
 
     optimizer = AdamW(params=llm.parameters())
 
@@ -88,10 +100,17 @@ def profile_model(
                 device=device
             )
             optimizer.zero_grad()
-            logits = llm(inputs)
-            loss = cross_entropy(logits.view(-1, vocab_size), outputs.view(-1))
-            loss.backward()
-            optimizer.step()
+
+            # Use autocast for mixed precision forward pass
+            with torch.amp.autocast('cuda', enabled=USE_AMP, dtype=DTYPE):
+                logits = llm(inputs)
+                loss = cross_entropy(logits.view(-1, vocab_size), outputs.view(-1))
+                loss.backward()
+                optimizer.step()
+
+    # Clear cached memory after warmup
+    torch.cuda.empty_cache()
+    print(f"Memory after warmup: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
 
     with nvtx.range("profile"):
         profile_times = []
@@ -108,8 +127,10 @@ def profile_model(
             timer = timeit.default_timer()
 
             with nvtx.range("forward"):
-                logits = llm(inputs)
-                loss = cross_entropy(logits.view(-1, vocab_size), outputs.view(-1))
+                # Use autocast for mixed precision forward pass
+                with torch.amp.autocast('cuda', enabled=USE_AMP, dtype=DTYPE):
+                    logits = llm(inputs)
+                    loss = cross_entropy(logits.view(-1, vocab_size), outputs.view(-1))
 
             # if forward_only:
             #     torch.cuda.synchronize(device=device)
@@ -119,7 +140,13 @@ def profile_model(
             #     continue
 
             with nvtx.range("backward"):
+                # if USE_AMP and not forward_only:
+                #     scaler.scale(loss).backward()
+                #     scaler.step(optimizer)
+                #     scaler.update()
+                # else:
                 loss.backward()
+                # if not forward_only:
                 optimizer.step()
 
             torch.cuda.synchronize(device=device)
@@ -137,6 +164,6 @@ if __name__ == "__main__":
 
     profile_model(
         dataset=dataset,
-        config=SMALL_LLM_CONFIG,
+        config=XL_LLM_CONFIG,
         forward_only=False
     )

@@ -7,6 +7,7 @@ import math
 import os
 from einops import rearrange, einsum
 import einx
+import torch.cuda.nvtx as nvtx
 
 import torch
 import torch.nn as nn
@@ -381,8 +382,9 @@ class TransformerBlock(nn.Module):
         attn_sublayer_output = x + x_attn
 
         # Apply the feed-forward sublayer
-        x_ffn = self.ffn(self.ln2(attn_sublayer_output))
-        ffn_sublayer_output = attn_sublayer_output + x_ffn
+        with nvtx.range("transformer ffn sublayer"):
+            x_ffn = self.ffn(self.ln2(attn_sublayer_output))
+            ffn_sublayer_output = attn_sublayer_output + x_ffn
         return ffn_sublayer_output
 
 
@@ -396,7 +398,7 @@ class SwiGLU(nn.Module):
     def forward(self, x):
         return self.w2(silu(self.w1(x)) * self.w3(x))
 
-
+@nvtx.range("scaled dot product attention")
 def scaled_dot_product_attention(
     Q: Float[Tensor, " ... queries d_k"],
     K: Float[Tensor, " ... keys    d_k"],
@@ -422,15 +424,19 @@ def scaled_dot_product_attention(
     """
 
     d_k = K.shape[-1]
-    attention_scores = einsum(Q, K, "... query d_k, ... key d_k -> ... query key") / math.sqrt(d_k)
+
+    with nvtx.range("computing attention scores"):
+        attention_scores = einsum(Q, K, "... query d_k, ... key d_k -> ... query key") / math.sqrt(d_k)
 
     if mask is not None:
         attention_scores = torch.where(mask, attention_scores, float("-inf"))
 
-    attention_weights = softmax(attention_scores, dim=-1)  # Softmax over the key dimension
+    with nvtx.range("computing softmax"):
+        attention_weights = softmax(attention_scores, dim=-1)  # Softmax over the key dimension
 
-    return einsum(attention_weights, V, "... query key, ... key d_v ->  ... query d_v")
-
+    with nvtx.range("final matmul"):
+        ret = einsum(attention_weights, V, "... query key, ... key d_v ->  ... query d_v")
+    return ret
 
 class CausalMultiHeadSelfAttention(nn.Module):
     """Multi-Head Self-Attention
@@ -475,6 +481,7 @@ class CausalMultiHeadSelfAttention(nn.Module):
 
         self.positional_encoder = positional_encoder  # RoPE
 
+    @nvtx.range("causal multihead attetion")
     def forward(self, x: Float[Tensor, " ... seq d_k"], token_positions: Int[Tensor, " ... seq"] | None = None) -> Float[Tensor, " ... seq d_v"]:
         """
         Args:

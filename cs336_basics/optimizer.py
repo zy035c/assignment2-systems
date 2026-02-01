@@ -33,32 +33,28 @@ class SGD(torch.optim.Optimizer):
 class AdamW(torch.optim.Optimizer):
     def __init__(
         self,
-        params,
-        lr=1e-3,
-        betas=(0.9, 0.999),
-        eps=1e-8,
-        weight_decay=0.01
+        params: Iterable[torch.nn.parameter.Parameter],
+        lr: float = 1e-3,
+        betas: tuple[float, float] = (0.9, 0.999),
+        eps: float = 1e-8,
+        weight_decay: float = 0.01,
     ):
-        if lr < 0:
+        if not 0.0 <= lr:
             raise ValueError(f"Invalid learning rate: {lr}")
-        defaults = {
-            "lr": lr,
-            "beta1": betas[0],
-            "beta2": betas[1],
-            "eps": eps,
-            "weight_decay": weight_decay
-        }
+        if not 0.0 <= eps:
+            raise ValueError(f"Invalid epsilon value: {eps}")
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError(f"Invalid beta parameter at index 0: {betas[0]}")
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError(f"Invalid beta parameter at index 1: {betas[1]}")
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
         super().__init__(params, defaults)
 
-    def step(self, closure: Optional[Callable] = None):
-        loss = None if closure is None else closure()
+    def step(self, closure: Callable | None = None):
+        loss = None
+        if closure is not None:
+            loss = closure()
         for group in self.param_groups:
-            lr = group["lr"]  # Get the learning rate.
-            beta1 = group["beta1"]
-            beta2 = group["beta2"]
-            eps = group["eps"]
-            weight_decay = group["weight_decay"]
-
             for p in group["params"]:
                 if p.grad is None:
                     continue
@@ -121,16 +117,3 @@ def gradient_clipping(
         if l2_norm >= M:
             p.grad = p.grad * (M / (l2_norm + eps))
     pass
-
-
-if __name__ == "__main__":
-    weights = torch.nn.Parameter(5 * torch.randn((10, 10)))
-    opt = SGD([weights], lr=1)
-
-    for t in range(100):
-        opt.zero_grad()
-        loss = (weights**2).mean()
-        print(loss.cpu().item())
-        loss.backward()
-        opt.step()
-    print(f"{weights.data=}")
